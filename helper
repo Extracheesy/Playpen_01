@@ -1,0 +1,42 @@
+python list_league_by_date.py --league all --when both --print
+
+
+python pm_beast_recorder_v2.py ^
+  --input-json "C:\Users\despo\PycharmProjects\sentiment_test\markets_grouped_all_2025-12-14_to_2025-12-15.json" ^
+  --out-dir "C:\Users\despo\PycharmProjects\sentiment_test\pm_data_v2" ^
+  --depth 10 --snap-interval 1 --flush-every 10
+
+pm_data_v2/
+├─ meta/
+│  ├─ input_markets.json
+│  ├─ markets_flat.csv
+│  └─ run_config.json
+│
+├─ markets/
+│  ├─ epl/
+│  │  ├─ 5387739__epl-bre-lee-2025-12-14-bre/
+│  │  │  └─ day=2025-12-14/
+│  │  │     ├─ snapshots.parquet
+│  │  │     ├─ features.parquet
+│  │  │     ├─ labels.parquet
+│  │  │     └─ raw_ws_book.jsonl.gz
+│  │  │
+│  │  ├─ 2718887__epl-bre-lee-2025-12-14-draw/
+│  │  │  └─ day=2025-12-14/
+│  │  │     ├─ snapshots.parquet
+│  │  │     ├─ features.parquet
+│  │  │     ├─ labels.parquet
+│  │  │     └─ raw_ws_book.jsonl.gz
+│  │
+│  ├─ fl1/
+│  │  ├─ 9128371__fl1-psg-lens-2025-12-14-psg/
+│  │  │  └─ day=2025-12-14/
+│  │  │     ├─ snapshots.parquet
+│  │  │     ├─ features.parquet
+│  │  │     ├─ labels.parquet
+│  │  │     └─ raw_ws_book.jsonl.gz
+│
+├─ index/                      # OPTIONAL global aggregation
+│  └─ day=2025-12-14/
+│     ├─ snapshots_all.parquet
+│     └─ labels_all.parquet

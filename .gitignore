@@ -1,0 +1,14 @@
+﻿# secrets / IDE
+.env
+.idea/
+
+# python
+__pycache__/
+*.pyc
+.venv*/
+*.egg-info/
+
+# logs & outputs
+log.txt
+*.csv
+*.json
