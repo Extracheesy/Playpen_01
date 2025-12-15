@@ -1,10 +1,31 @@
 python list_league_by_date.py --league all --when both --print
 
-
 python pm_beast_recorder_v2.py ^
   --input-json "C:\Users\despo\PycharmProjects\sentiment_test\markets_grouped_all_2025-12-14_to_2025-12-15.json" ^
   --out-dir "C:\Users\despo\PycharmProjects\sentiment_test\pm_data_v2" ^
   --depth 10 --snap-interval 1 --flush-every 10
+
+
+python pm_cleanup_by_schedule.py `
+   --data-dir pm_data_v2 `
+   --markets-json markets_grouped_all_2025-12-14_to_2025-12-15.json `
+   --inplace --backup `
+   --pre-min 30 `
+
+python pm_cleanup_trim_post_completion.py --data-dir pm_data_v2 --inplace --backup
+
+
+$ts = Get-Date -Format "yyyyMMdd_HHmmss"
+$log = "C:\Users\INTRADE\PycharmProjects\Polymarket_live\Playpen_01\pm_data_v2\logs\recorder_$ts.log"
+
+python pm_beast_recorder_v2.py `
+  --input-json "C:\Users\INTRADE\PycharmProjects\Polymarket_live\Playpen_01\markets_grouped_all_2025-12-14_to_2025-12-15.json" `
+  --out-dir "C:\Users\INTRADE\PycharmProjects\Polymarket_live\Playpen_01\pm_data_v2" `
+  --depth 10 `
+  --snap-interval 1 `
+  --flush-every 30 --no-index-all `
+  *>> $log
+
 
 pm_data_v2/
 ├─ meta/
