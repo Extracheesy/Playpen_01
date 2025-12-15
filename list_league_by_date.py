@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests
@@ -12,7 +12,9 @@ import requests
 GAMMA = "https://gamma-api.polymarket.com"
 LIMIT = 200
 
-DEFAULT_SLUG_EXCLUDE = ["btts", "spread", "total"]  # must NOT appear in slug
+DEFAULT_SLUG_EXCLUDE = ["btts", "spread", "total"]  # must NOT appear in slug (all leagues)
+DEFAULT_NBA_SLUG_EXCLUDE = ["assists", "points", "rebounds", "spread", "total"]  # NBA-only (props)
+
 
 LEAGUE_TO_SLUG_PREFIX = {
     # England
@@ -38,6 +40,10 @@ LEAGUE_TO_SLUG_PREFIX = {
 
     # Mexico
     "mex": "mex-",
+
+    # Basketball
+    # NBA markets are not reliably slug-prefixed like football. We'll special-handle it via metadata + startTime.
+    "nba": "__NBA__",
 }
 
 
@@ -109,9 +115,80 @@ def normalize_leagues(raw_leagues: list[str]) -> list[str]:
     return out
 
 
+def _as_lower_str(x) -> str:
+    return (x or "").lower() if isinstance(x, str) else ""
+
+
+def _as_lower_list(x) -> list[str]:
+    if isinstance(x, list):
+        out = []
+        for v in x:
+            if isinstance(v, str):
+                out.append(v.lower())
+        return out
+    return []
+
+
+def is_nba_market(m: dict) -> bool:
+    """
+    NBA markets are best detected via metadata rather than slug prefixes.
+    We'll try several common fields that appear in Gamma responses.
+    """
+    slug = _as_lower_str(m.get("slug"))
+    question = _as_lower_str(m.get("question"))
+    category = _as_lower_str(m.get("category"))
+    sport = _as_lower_str(m.get("sport"))
+    league = _as_lower_str(m.get("league"))
+    tags = _as_lower_list(m.get("tags"))
+
+    # Fast win if slug is actually prefixed
+    if slug.startswith("nba-"):
+        return True
+
+    hay = " ".join([category, sport, league, question, " ".join(tags)])
+
+    # Explicit NBA
+    if " nba " in f" {hay} " or hay.startswith("nba") or "nba:" in hay:
+        return True
+
+    # Basketball + explicit NBA mention
+    if "basketball" in hay and ("nba" in hay or "national basketball association" in hay):
+        return True
+
+    # Tags sometimes contain "NBA"
+    if any(t == "nba" or "nba" in t for t in tags):
+        return True
+
+    return False
+
+
+def parse_market_date_from_start_time(m: dict, tz: ZoneInfo) -> str | None:
+    """
+    Try to derive YYYY-MM-DD (Paris date) from startTime if present.
+    Gamma often uses ISO timestamps like '2025-12-15T00:00:00Z'.
+    """
+    st = m.get("startTime")
+    if not isinstance(st, str) or not st:
+        return None
+
+    st_norm = st.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(st_norm)
+    except ValueError:
+        # last resort: take first 10 chars if it looks like YYYY-MM-DD...
+        if len(st) >= 10 and st[4] == "-" and st[7] == "-":
+            return st[:10]
+        return None
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return dt.astimezone(tz).date().strftime("%Y-%m-%d")
+
+
 def main():
     ap = argparse.ArgumentParser(
-        description="Find Polymarket markets by league slug prefix and date embedded in slug. Supports multi-league + today/tomorrow."
+        description="Find Polymarket markets by league slug prefix and date embedded in slug. Supports multi-league + today/tomorrow. NBA is detected via metadata + startTime."
     )
 
     g = ap.add_mutually_exclusive_group(required=False)
@@ -131,7 +208,7 @@ def main():
         "--league",
         required=True,
         nargs="+",
-        help="One or more leagues (space-separated), or 'all'. Example: --league epl bun fl1 | --league all",
+        help="One or more leagues (space-separated), or 'all'. Example: --league epl bun fl1 nba | --league all",
     )
 
     ap.add_argument(
@@ -143,7 +220,7 @@ def main():
     ap.add_argument(
         "--exclude",
         default=",".join(DEFAULT_SLUG_EXCLUDE),
-        help="Comma-separated slug fragments to exclude (default: btts,spread,total)",
+        help="Comma-separated slug fragments to exclude (global, default: btts,spread,total)",
     )
 
     ap.add_argument(
@@ -160,6 +237,8 @@ def main():
 
     date_patterns = [f"-{d}-".lower() for d in dates]
     slug_exclude = [x.strip().lower() for x in args.exclude.split(",") if x.strip()]
+    nba_slug_exclude = list(DEFAULT_NBA_SLUG_EXCLUDE)
+
     league_prefixes = {lk: LEAGUE_TO_SLUG_PREFIX[lk].lower() for lk in leagues}
 
     all_markets = fetch_all_active_markets()
@@ -173,27 +252,51 @@ def main():
             continue
         slug_l = slug.lower()
 
+        # Global exclude (applies to all leagues)
+        if any(x in slug_l for x in slug_exclude):
+            continue
+
+        # 1) Match league
         matched_league = None
         matched_prefix = None
+
         for lk, pref in league_prefixes.items():
-            if slug_l.startswith(pref):
-                matched_league = lk
-                matched_prefix = pref
-                break
+            if lk == "nba":
+                if is_nba_market(m):
+                    matched_league = "nba"
+                    matched_prefix = "nba"
+                    break
+            else:
+                if slug_l.startswith(pref):
+                    matched_league = lk
+                    matched_prefix = pref
+                    break
+
         if not matched_league:
             continue
 
+        # NBA-only exclude (props)
+        if matched_league == "nba":
+            if any(x in slug_l for x in nba_slug_exclude):
+                continue
+
+        # 2) Match date
         matched_date = None
         for pat in date_patterns:
             if pat in slug_l:
                 matched_date = pat.strip("-")
                 break
+
         if not matched_date:
-            continue
+            if matched_league == "nba":
+                d_from_time = parse_market_date_from_start_time(m, tz)
+                if not d_from_time or d_from_time not in dates:
+                    continue
+                matched_date = d_from_time
+            else:
+                continue
 
-        if any(x in slug_l for x in slug_exclude):
-            continue
-
+        # Prefer regex date if present in slug
         mdate = matched_date
         mm = date_regex.search(slug_l)
         if mm:
@@ -212,6 +315,7 @@ def main():
                 "archived": m.get("archived"),
                 "outcomes": m.get("outcomes"),
                 "clobTokenIds": m.get("clobTokenIds"),
+                "startTime": m.get("startTime"),
                 "url": f"https://polymarket.com/market/{slug}",
             }
         )
@@ -232,6 +336,7 @@ def main():
             "dates": dates,
             "datePatternsInSlug": date_patterns,
             "slugExclude": slug_exclude,
+            "nbaSlugExclude": nba_slug_exclude,
             "source": {
                 "api": "gamma",
                 "endpoint": f"{GAMMA}/markets",
@@ -250,7 +355,9 @@ def main():
         out_file = f"markets_grouped_{leagues_part}_{dates_part}.json"
 
     print(f"[OK] Found {len(matches)} market(s) for leagues={leagues} dates={dates}")
-    print(f"     excludes={slug_exclude}")
+    print(f"     excludes(global)={slug_exclude}")
+    if "nba" in leagues:
+        print(f"     excludes(nba)={nba_slug_exclude}")
     print(f"     grouped as byDate[date][league]")
 
     if args.print:
@@ -261,6 +368,8 @@ def main():
             print("slug:", mm["slug"])
             print("question:", mm["question"])
             print("tokens:", mm["clobTokenIds"])
+            if mm.get("startTime"):
+                print("startTime:", mm["startTime"])
             print("url:", mm["url"])
 
     with open(out_file, "w", encoding="utf-8") as f:

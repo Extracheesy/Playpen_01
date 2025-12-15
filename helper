@@ -1,5 +1,7 @@
 python list_league_by_date.py --league all --when both --print
 
+python list_league_by_date.py --league nba --when both --out nba_today_tomorrow.json
+
 python pm_beast_recorder_v2.py ^
   --input-json "C:\Users\despo\PycharmProjects\sentiment_test\markets_grouped_all_2025-12-14_to_2025-12-15.json" ^
   --out-dir "C:\Users\despo\PycharmProjects\sentiment_test\pm_data_v2" ^
