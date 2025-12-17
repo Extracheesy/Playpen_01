@@ -1,12 +1,29 @@
+
+# FOOT
 python list_league_by_date.py --league all --when both --print
 
+# NBA
 python list_league_by_date.py --league nba --when both --out nba_today_tomorrow.json
 
+# RECORDING
 python pm_beast_recorder_v2.py ^
   --input-json "C:\Users\despo\PycharmProjects\sentiment_test\markets_grouped_all_2025-12-14_to_2025-12-15.json" ^
   --out-dir "C:\Users\despo\PycharmProjects\sentiment_test\pm_data_v2" ^
   --depth 10 --snap-interval 1 --flush-every 10
 
+python pm_beast_recorder.py --input-json ".\nba_today_tomorrow.json" --out-dir ".\pm_nba_data_v2" --depth 10 --snap-interval 1 --flush-every 10
+python pm_beast_recorder.py --input-json ".\nba_today_tomorrow.json" --out-dir ".\pm_nba_data_v3" --depth 10 --snap-interval 1 --flush-every 10
+
+python pm_beast_recorder_v2.py ^
+  --input-json ".\nba_today_tomorrow.json" ^
+  --out-dir ".\pm_nba_data_v2" ^
+  --depth 10 --snap-interval 1 --flush-every 10
+
+python pm_cleanup_trim_post_completion.py --data-dir pm_data_v2 --inplace --backup
+
+python pm_cleanup_by_schedule.py `
+  --data-dir pm_nba_data_v2 `
+  --inplace --backup `
 
 python pm_cleanup_by_schedule.py `
    --data-dir pm_data_v2 `
@@ -14,8 +31,20 @@ python pm_cleanup_by_schedule.py `
    --inplace --backup `
    --pre-min 30 `
 
-python pm_cleanup_trim_post_completion.py --data-dir pm_data_v2 --inplace --backup
+# VALIDATE AND PLOT
+python pm_validate_and_plot.py --data-dir ./pm_data_v2 --out-dir pm_check
+python pm_validate_and_plot.py --data-dir ./pm_nba_data_v2 --out-dir pm_check
 
+
+
+
+python list_league_by_date.py --league nba --when both --out nba_today_tomorrow.json --print
+python pm_beast_recorder.py --input-json ".\nba_today_tomorrow.json" --out-dir ".\pm_nba_data_v4" --depth 10 --snap-interval 1 --flush-every 10
+
+
+
+
+python pm_market_status_check.py --input-json ".\nba_today_tomorrow.json" --out-dir ".\pm_nba_status" --print
 
 $ts = Get-Date -Format "yyyyMMdd_HHmmss"
 $log = "C:\Users\INTRADE\PycharmProjects\Polymarket_live\Playpen_01\pm_data_v2\logs\recorder_$ts.log"

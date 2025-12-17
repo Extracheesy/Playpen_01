@@ -55,7 +55,6 @@ def fetch_market_from_gamma(market_id: str | None, slug: str | None, session: re
         r = session.get(f"{GAMMA_BASE}/markets", params={"id": market_id}, timeout=20)
         if r.ok:
             j = r.json()
-            # could be a dict or list depending on API behavior
             if isinstance(j, dict) and j.get("id"):
                 return j
             if isinstance(j, list) and len(j) > 0:
@@ -69,7 +68,6 @@ def fetch_market_from_gamma(market_id: str | None, slug: str | None, session: re
             if isinstance(j, dict) and j.get("slug"):
                 return j
             if isinstance(j, list):
-                # if list, pick exact match if possible
                 for it in j:
                     if isinstance(it, dict) and it.get("slug") == slug:
                         return it
@@ -93,24 +91,25 @@ def build_schedule_map(markets: list[dict], rate_sleep: float = 0.05) -> dict[st
     """
     Returns {slug: (start_dt, end_dt)}
     """
-    out = {}
+    out: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
     with requests.Session() as session:
-        session.headers.update({"User-Agent": "pm_cleanup_by_schedule/1.0"})
+        session.headers.update({"User-Agent": "pm_cleanup_by_schedule/1.1"})
 
         for m in markets:
-            slug = m["slug"]
-            mid = m["id"]
+            slug = m.get("slug")
+            mid = m.get("id")
 
             info = fetch_market_from_gamma(mid, slug, session=session)
             if not info:
+                # keep missing ones out of map so caller can skip
+                time.sleep(rate_sleep)
                 continue
 
-            # These keys depend on Gamma’s schema; we try common variants.
             start = parse_dt(info.get("startDate") or info.get("startTime") or info.get("eventStartDate"))
             end = parse_dt(info.get("endDate") or info.get("resolveDate") or info.get("eventEndDate"))
 
-            # If still missing, keep NaT (caller will skip)
-            out[slug] = (start, end)
+            if slug:
+                out[slug] = (start, end)
 
             time.sleep(rate_sleep)
     return out
@@ -149,17 +148,65 @@ def write_snapshots(df: pd.DataFrame, path: Path, fmt: str):
         df.to_csv(path, index=False)
 
 
-def extract_slug(market_folder: str) -> str | None:
-    # folder looks like "783811__epl-cry-mac-2025-12-14-mac"
+def extract_id_and_slug(market_folder: str) -> tuple[str | None, str | None]:
+    """
+    folder looks like "783811__epl-cry-mac-2025-12-14-mac"
+    returns ("783811", "epl-cry-mac-2025-12-14-mac")
+    """
     if "__" not in market_folder:
-        return None
-    return market_folder.split("__", 1)[1]
+        return None, None
+    left, right = market_folder.split("__", 1)
+    market_id = left.strip() or None
+    slug = right.strip() or None
+    return market_id, slug
+
+
+def discover_markets_from_data_dir(data_dir: Path, only_league: str | None, only_date: str | None) -> list[dict]:
+    """
+    Build markets list from existing directories.
+    We include league/date for optional filtering & debug, but schedule fetching uses id/slug.
+    """
+    seen = set()
+    out = []
+
+    for league, market_folder, daydir in find_day_dirs(data_dir):
+        if only_league and league != only_league:
+            continue
+        if only_date and daydir.name != f"day={only_date}":
+            continue
+
+        mid, slug = extract_id_and_slug(market_folder)
+        if not slug:
+            continue
+
+        key = (mid or "", slug)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        out.append(
+            {
+                "id": str(mid) if mid else None,
+                "slug": slug,
+                "league": league,
+                "date": daydir.name.replace("day=", ""),
+            }
+        )
+
+    return out
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", required=True)
-    ap.add_argument("--markets-json", required=True)
+
+    # now optional
+    ap.add_argument(
+        "--markets-json",
+        default=None,
+        help="Optional grouped markets JSON. If omitted, markets are discovered from --data-dir folder names.",
+    )
+
     ap.add_argument("--inplace", action="store_true")
     ap.add_argument("--backup", action="store_true")
 
@@ -174,22 +221,32 @@ def main():
 
     data_dir = Path(args.data_dir)
 
-    # 1) load all (id, slug) from your grouped json
-    markets = extract_markets_from_grouped_json(Path(args.markets_json))
+    # 1) build markets list
+    markets: list[dict]
+    if args.markets_json:
+        markets = extract_markets_from_grouped_json(Path(args.markets_json))
 
-    # optional filtering here (based on the json metadata)
-    if args.only_league:
-        markets = [m for m in markets if m.get("league") == args.only_league]
-    if args.only_date:
-        markets = [m for m in markets if m.get("date") == args.only_date]
+        # optional filtering based on JSON metadata
+        if args.only_league:
+            markets = [m for m in markets if m.get("league") == args.only_league]
+        if args.only_date:
+            markets = [m for m in markets if m.get("date") == args.only_date]
 
-    if not markets:
-        print("[ERR] No markets extracted from markets json (check file path/format).")
-        return
+        if not markets:
+            print("[ERR] No markets extracted from markets json (check file path/format).")
+            return
+        print(f"[INFO] Markets source: markets-json ({len(markets)} markets)")
+    else:
+        markets = discover_markets_from_data_dir(data_dir, args.only_league, args.only_date)
+        if not markets:
+            print("[ERR] No markets discovered from --data-dir. Expected folders like markets/<league>/<id__slug>/day=YYYY-MM-DD/")
+            return
+        print(f"[INFO] Markets source: data-dir discovery ({len(markets)} unique markets)")
 
     # 2) build schedule map from Gamma
     print(f"[INFO] Fetching schedules from Gamma for {len(markets)} markets ...")
     sched = build_schedule_map(markets, rate_sleep=args.gamma_sleep)
+    print(f"[INFO] Schedules fetched: {len(sched)} slugs")
 
     total = trimmed = skipped = 0
     pre = timedelta(minutes=args.pre_min)
@@ -202,7 +259,7 @@ def main():
             continue
 
         total += 1
-        slug = extract_slug(market_folder)
+        mid, slug = extract_id_and_slug(market_folder)
         if not slug:
             print(f"[SKIP] {league} | {market_folder} | {daydir.name}: cannot parse slug from folder name")
             skipped += 1

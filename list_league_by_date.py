@@ -13,7 +13,7 @@ GAMMA = "https://gamma-api.polymarket.com"
 LIMIT = 200
 
 DEFAULT_SLUG_EXCLUDE = ["btts", "spread", "total"]  # must NOT appear in slug (all leagues)
-DEFAULT_NBA_SLUG_EXCLUDE = ["assists", "points", "rebounds", "spread", "total"]  # NBA-only (props)
+DEFAULT_NBA_SLUG_EXCLUDE = ["assists", "points", "rebounds", "spread", "total", "1h"]  # NBA-only (props)
 
 
 LEAGUE_TO_SLUG_PREFIX = {
@@ -167,7 +167,15 @@ def parse_market_date_from_start_time(m: dict, tz: ZoneInfo) -> str | None:
     Try to derive YYYY-MM-DD (Paris date) from startTime if present.
     Gamma often uses ISO timestamps like '2025-12-15T00:00:00Z'.
     """
-    st = m.get("startTime")
+    # Gamma is inconsistent for NBA: startTime is often null, while gameStartTime/eventStartTime is set.
+    # Try a few common timestamp fields, first non-empty wins.
+    st = (
+        m.get("startTime")
+        or m.get("gameStartTime")
+        or m.get("eventStartTime")
+        or m.get("startDate")
+        or m.get("endDate")
+    )
     if not isinstance(st, str) or not st:
         return None
 
@@ -235,7 +243,7 @@ def main():
     dates = compute_dates(args.date, args.when, tz)
     leagues = normalize_leagues(args.league)
 
-    date_patterns = [f"-{d}-".lower() for d in dates]
+    date_patterns = [f"-{d}-".lower() for d in dates] + [f"-{d}".lower() for d in dates]
     slug_exclude = [x.strip().lower() for x in args.exclude.split(",") if x.strip()]
     nba_slug_exclude = list(DEFAULT_NBA_SLUG_EXCLUDE)
 
@@ -282,10 +290,21 @@ def main():
 
         # 2) Match date
         matched_date = None
-        for pat in date_patterns:
-            if pat in slug_l:
-                matched_date = pat.strip("-")
-                break
+
+        # Prefer extracting YYYY-MM-DD directly from the slug (works for both:
+        #   nba-sas-nyk-2025-12-17
+        # and
+        #   nba-sas-nyk-2025-12-17-1h-moneyline
+        mm_date = date_regex.search(slug_l)
+        if mm_date:
+            matched_date = mm_date.group(1)
+        else:
+            # Fallback: legacy contains checks (kept for compatibility/metadata)
+            for pat in date_patterns:
+                if pat in slug_l:
+                    # pat is either "-YYYY-MM-DD-" or "-YYYY-MM-DD"
+                    matched_date = pat.strip("-")
+                    break
 
         if not matched_date:
             if matched_league == "nba":
